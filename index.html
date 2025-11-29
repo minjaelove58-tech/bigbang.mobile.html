@@ -1,0 +1,494 @@
+# bigbang.mobile.html
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>Big Bang 3D — Step 8.3 (Right-Top Chart Edition)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<script src="https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+html,body{
+  margin:0;
+  height:100%;
+  background:#000;
+  color:#fff;
+  font-family:system-ui,Segoe UI,Arial;
+  overflow:hidden;
+}
+canvas{
+  position:absolute;
+  top:0;
+  left:0;
+  z-index:0;
+  /* 터치로 드래그/핀치할 때 브라우저 제스처 방지 */
+  touch-action:none;
+}
+
+/* ---------- UI 공통 ---------- */
+#hud,#panel,#playbox,#chartBox,#epochBadge,#epochLabels{
+  position:absolute;
+  z-index:10;
+}
+#hud{
+  top:12px;
+  left:12px;
+  background:rgba(0,0,30,.6);
+  padding:10px 14px;
+  border-radius:10px;
+}
+#hud .title{
+  font-weight:700;
+  color:#74e5ff;
+  margin-bottom:6px;
+}
+
+#panel{
+  bottom:80px;
+  left:50%;
+  transform:translateX(-50%);
+  background:rgba(0,0,25,.75);
+  padding:12px 18px;
+  border-radius:12px;
+  display:flex;
+  gap:16px;
+  flex-wrap:wrap;
+  backdrop-filter:blur(8px);
+}
+.ctrl{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.ctrl label{
+  font-size:13px;
+  opacity:.85;
+  text-align:center;
+}
+
+/* ---------- Cosmic Time 슬라이더 ---------- */
+#time{
+  width:500px;
+  height:10px;
+  border-radius:5px;
+  outline:none;
+  accent-color:#00e5ff;
+  background:linear-gradient(to right,
+    #ffffff 0%, #ffffff 5%,
+    #99ddff 5%, #66b9ff 25%,
+    #ffd580 25%, #ffd580 45%,
+    #aabbff 45%, #aabbff 100%);
+}
+
+/* ---------- Epoch 라벨 ---------- */
+#epochLabels{
+  bottom:60px;
+  left:50%;
+  transform:translateX(-50%);
+  display:flex;
+  justify-content:space-between;
+  width:520px;
+  font-size:13px;
+  color:#aaa;
+}
+#epochLabels span.active{
+  color:#fff;
+  font-weight:700;
+  text-shadow:0 0 6px #00eaff;
+}
+
+/* ---------- Play 버튼 ---------- */
+#playbox{
+  top:15px;
+  right:15px;
+  background:rgba(0,0,40,.6);
+  padding:8px 12px;
+  border-radius:8px;
+}
+button{
+  background:#008cff;
+  color:#fff;
+  border:0;
+  border-radius:6px;
+  padding:6px 14px;
+  cursor:pointer;
+}
+button:hover{
+  background:#00aaff;
+}
+
+/* ---------- Chart Box (오른쪽 위) ---------- */
+#chartBox{
+  position:absolute;
+  right:15px;
+  top:80px;
+  bottom:auto;
+  width:320px;
+  height:180px;
+  background:rgba(0,0,30,.6);
+  padding:8px;
+  border-radius:10px;
+  backdrop-filter:blur(8px);
+  z-index:10;
+}
+
+/* ---------- Epoch 배지 ---------- */
+#epochBadge{
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  padding:8px 12px;
+  border-radius:10px;
+  background:rgba(0,0,0,.25);
+  font-weight:800;
+  font-size:28px;
+  pointer-events:none;
+  z-index:5;
+}
+
+/* 모바일에서 패널 조금 줄이기 */
+@media (max-width: 600px){
+  #panel{
+    padding:10px 10px;
+    gap:8px 10px;
+  }
+  .ctrl label{
+    font-size:12px;
+  }
+  #time{
+    width:320px;
+  }
+}
+</style>
+</head>
+
+<body>
+<canvas id="bg"></canvas>
+
+<div id="hud">
+  <div class="title">🌌 Big Bang 3D — Step 8.3</div>
+  <div id="epoch">Epoch: –</div>
+  <div id="stats">a = – | T = – K | ρ = –</div>
+</div>
+
+<div id="panel">
+  <div class="ctrl">
+    <label>⏳ Cosmic Time (0–100)</label>
+    <input id="time" type="range" min="0" max="100" value="0">
+  </div>
+</div>
+
+<div id="epochLabels">
+  <span id="labInflation">Inflation</span>
+  <span id="labPlasma">Plasma</span>
+  <span id="labRecomb">Recomb.</span>
+  <span id="labDark">Dark A</span>
+</div>
+
+<div id="playbox"><button id="playBtn">▶ Play</button></div>
+<div id="chartBox"><canvas id="chart"></canvas></div>
+<div id="epochBadge">–</div>
+
+<script>
+/* ---------- 물리식 ---------- */
+function a_phys(t,H0,Om,Ol){
+  const H=(H0/100)*Math.sqrt(Om/Math.pow(1+t,3)+Ol);
+  return Math.exp(H*t*1e-2);
+}
+function T_from_a(a){return 2.7/a;}
+function rho_from_a(a){return 1/(a*a*a);}
+function epochOf(T){
+  if(T>1e6)  return "Inflation";
+  if(T>1e4)  return "Plasma Era";
+  if(T>3e3)  return "Recombination";
+  return "bid bang";
+}
+
+/* ---------- 색상 팔레트 ---------- */
+const STAR_CLR={
+  "Inflation":0xffffff,
+  "Plasma Era":0x99ddff,
+  "Recombination":0xffdd88,
+  "Dark Ages":0xaabbff
+};
+const BG_CLR={
+  "Inflation":"#ffffff",
+  "Plasma Era":"#66b9ff",
+  "Recombination":"#ffd580",
+  "Dark Ages":"#000010"
+};
+
+/* ---------- Three.js ---------- */
+const canvas3d = document.getElementById("bg");
+const renderer=new THREE.WebGLRenderer({antialias:true,canvas:canvas3d});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+renderer.setClearColor(0x000000);
+
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,10000);
+
+// 카메라 구면좌표
+let radius=1200,theta=0,phi=0.9;
+function updateCam(){
+  camera.position.set(
+    radius*Math.sin(phi)*Math.cos(theta),
+    radius*Math.cos(phi),
+    radius*Math.sin(phi)*Math.sin(theta)
+  );
+  camera.lookAt(0,0,0);
+}
+updateCam();
+
+/* ---------- 별 점 생성 ---------- */
+const COUNT=40000,pos=new Float32Array(COUNT*3);
+for(let i=0;i<COUNT;i++){
+  const r=Math.pow(Math.random(),0.62)*260;
+  const th=Math.random()*Math.PI*2;
+  const ph=Math.acos(2*Math.random()-1);
+  pos[i*3]  = r*Math.sin(ph)*Math.cos(th);
+  pos[i*3+1]= r*Math.sin(ph)*Math.sin(th);
+  pos[i*3+2]= r*Math.cos(ph);
+}
+const geo=new THREE.BufferGeometry();
+geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+const mat=new THREE.PointsMaterial({color:0xffffff,size:3,sizeAttenuation:true});
+const stars=new THREE.Points(geo,mat);
+scene.add(stars);
+
+/* ---------- Chart.js ---------- */
+const chart=new Chart(document.getElementById("chart"),{
+ type:"line",
+ data:{labels:[],datasets:[
+  {label:"a(t)",borderColor:"#0ff",data:[],pointRadius:0,borderWidth:2},
+  {label:"T(t)*1000K",borderColor:"#f93",data:[],pointRadius:0,borderWidth:2},
+  {label:"ρ(t)",borderColor:"#9f3",data:[],pointRadius:0,borderWidth:2}
+ ]},
+ options:{
+  animation:false,
+  responsive:true,
+  scales:{
+    y:{type:"logarithmic",min:1e-6,max:1e6,ticks:{color:"#ccc"}},
+    x:{ticks:{color:"#ccc"}}
+  },
+  plugins:{legend:{labels:{color:"#ccc"}}}
+ }
+});
+
+/* ---------- UI 요소 ---------- */
+const elTime = document.getElementById("time");
+const epochEl = document.getElementById("epoch");
+const statsEl = document.getElementById("stats");
+const badge = document.getElementById("epochBadge");
+const playBtn = document.getElementById("playBtn");
+
+/* ---------- 카메라 회전/줌: 포인터(마우스+터치) ---------- */
+const activePointers = new Map(); // id -> {x,y}
+let rotateStartTheta = 0;
+let rotateStartPhi = 0;
+let rotateStartPos = {x:0,y:0};
+
+let pinchStartDist = null;
+let pinchStartRadius = radius;
+
+// 포인터 다운
+canvas3d.addEventListener("pointerdown", (e)=>{
+  // 왼쪽 버튼/터치만
+  if (e.button !== undefined && e.button !== 0) return;
+  activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  canvas3d.setPointerCapture(e.pointerId);
+
+  if (activePointers.size === 1) {
+    const p = activePointers.values().next().value;
+    rotateStartPos = {x:p.x, y:p.y};
+    rotateStartTheta = theta;
+    rotateStartPhi   = phi;
+    pinchStartDist = null;
+  } else if (activePointers.size === 2) {
+    const it = activePointers.values();
+    const p1 = it.next().value;
+    const p2 = it.next().value;
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    pinchStartDist = Math.hypot(dx, dy) || 1;
+    pinchStartRadius = radius;
+  }
+});
+
+// 포인터 이동
+window.addEventListener("pointermove", (e)=>{
+  if (!activePointers.has(e.pointerId)) return;
+  activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+
+  if (activePointers.size === 1) {
+    // 1손가락 / 마우스 → 카메라 회전
+    const p = activePointers.values().next().value;
+    const dx = p.x - rotateStartPos.x;
+    const dy = p.y - rotateStartPos.y;
+    theta = rotateStartTheta - dx * 0.005;
+    phi   = rotateStartPhi   - dy * 0.005;
+    // 위/아래 극점 제한
+    phi = Math.max(0.05, Math.min(Math.PI - 0.05, phi));
+    updateCam();
+  } else if (activePointers.size === 2) {
+    // 2손가락 → 핀치 줌
+    const it = activePointers.values();
+    const p1 = it.next().value;
+    const p2 = it.next().value;
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    if (pinchStartDist != null) {
+      // dist 커지면 줌인(가까워짐), 작아지면 줌아웃
+      const factor = pinchStartDist / dist;
+      radius = pinchStartRadius * factor;
+      radius = Math.max(200, Math.min(4000, radius));
+      updateCam();
+    } else {
+      pinchStartDist = dist;
+      pinchStartRadius = radius;
+    }
+  }
+});
+
+// 포인터 업/취소
+function endPointer(e){
+  if (!activePointers.has(e.pointerId)) return;
+  activePointers.delete(e.pointerId);
+  try { canvas3d.releasePointerCapture(e.pointerId); } catch(_){}
+
+  if (activePointers.size === 1) {
+    // 두 손가락에서 하나 뗀 경우 → 남은 손가락 기준으로 회전 시작점 재설정
+    const p = activePointers.values().next().value;
+    rotateStartPos = {x:p.x, y:p.y};
+    rotateStartTheta = theta;
+    rotateStartPhi   = phi;
+    pinchStartDist = null;
+  } else if (activePointers.size === 0) {
+    pinchStartDist = null;
+  }
+}
+window.addEventListener("pointerup", endPointer);
+window.addEventListener("pointercancel", endPointer);
+
+// 마우스 휠 줌 (PC용)
+canvas3d.addEventListener("wheel", (e)=>{
+  e.preventDefault();
+  const factor = 1 + Math.sign(e.deltaY)*0.1;
+  radius *= factor;
+  radius = Math.max(200, Math.min(4000, radius));
+  updateCam();
+}, {passive:false});
+
+/* ---------- 재생/플래시 ---------- */
+let isPlaying=false;
+let last=performance.now();
+let speed=0.35;
+let flashT=0;
+const FLASH_DUR=1.0;
+
+function triggerFlash(){
+  flashT=FLASH_DUR;
+}
+
+playBtn.onclick=()=>{
+  isPlaying=!isPlaying;
+  playBtn.textContent=isPlaying?"⏸ Pause":"▶ Play";
+  last=performance.now();
+  if(isPlaying) triggerFlash();
+};
+
+/* ---------- 라벨 하이라이트 ---------- */
+const labels={
+  "Inflation":document.getElementById("labInflation"),
+  "Plasma Era":document.getElementById("labPlasma"),
+  "Recombination":document.getElementById("labRecomb"),
+  "Dark Ages":document.getElementById("labDark")
+};
+function highlightEpoch(ep){
+  for(const k in labels) labels[k].classList.remove("active");
+  if(labels[ep]) labels[ep].classList.add("active");
+}
+
+/* ---------- 메인 루프 ---------- */
+function animate(ts){
+  requestAnimationFrame(animate);
+  const dt = (ts - last);
+
+  // 시간 슬라이더 자동 재생
+  if(isPlaying && dt > 30){
+    let v = parseFloat(elTime.value) + speed;
+    if(v > 100) v = 100;
+    elTime.value = v;
+    last = ts;
+  }
+
+  const t = parseFloat(elTime.value)/100;
+  const a = a_phys(t,70,0.3,0.7);
+  const T = T_from_a(a);
+  const rho = rho_from_a(a);
+  const ep = epochOf(T);
+
+  highlightEpoch(ep);
+
+  if(ep === "Dark Ages"){
+    mat.color.set(0xaabbff);
+    mat.size = 3.3;
+    renderer.setClearColor("#000010");
+    scene.fog = new THREE.FogExp2(0x150030,0.0012);
+  } else {
+    scene.fog = null;
+  }
+
+  if(flashT > 0){
+    flashT = Math.max(0, flashT - 0.02);
+    const k = flashT / FLASH_DUR;
+    mat.size = 3 + 9*k;
+    mat.color.set(0xffffff);
+    renderer.setClearColor(0xffffff);
+  } else {
+    mat.color.set(STAR_CLR[ep] || 0xffffff);
+    mat.size = (ep==="Inflation") ? 6 :
+               (ep==="Plasma Era") ? 4 :
+               (ep==="Recombination") ? 3 : 3;
+    renderer.setClearColor(BG_CLR[ep] || "#000");
+  }
+
+  // 우주 팽창 스케일
+  stars.scale.setScalar(1 + t*5);
+  // 은하 약간 회전
+  stars.rotation.y += 0.0015;
+  // 아주 천천히 카메라 방위각 회전 (기본)
+  theta += 0.0003;
+  updateCam();
+
+  badge.textContent = ep;
+  epochEl.textContent = `Epoch: ${ep}`;
+  statsEl.textContent = `a=${a.toFixed(4)} | T=${T.toExponential(3)} K | ρ=${rho.toExponential(3)}`;
+
+  // 그래프 업데이트
+  chart.data.labels.push(t.toFixed(2));
+  chart.data.datasets[0].data.push(a);
+  chart.data.datasets[1].data.push(T*1000);
+  chart.data.datasets[2].data.push(rho);
+  if(chart.data.labels.length > 150){
+    chart.data.labels.shift();
+    chart.data.datasets.forEach(d=>d.data.shift());
+  }
+  chart.update();
+
+  renderer.render(scene,camera);
+}
+animate();
+
+/* ---------- 리사이즈 ---------- */
+addEventListener('resize',()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+  updateCam();
+});
+</script>
+</body>
+</html>
